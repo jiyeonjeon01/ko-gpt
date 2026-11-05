@@ -83,6 +83,25 @@ def decode(tok: Tokenizer, ids: list[int]) -> str:
     return tok.decode(ids, skip_special_tokens=False)
 
 
+def token_byte_lengths(tok: Tokenizer) -> list[int]:
+    """토큰 ID별 원문 UTF-8 바이트 수 (BPB 계산용). 특수 토큰은 0.
+
+    바이트 수준 BPE의 토큰 문자열은 바이트 하나를 문자 하나로 대응시킨 것이라 길이 = 바이트 수다.
+    """
+    special = set(SPECIAL_TOKENS)
+    alphabet = set(pre_tokenizers.ByteLevel.alphabet())
+    lengths = []
+    for i in range(tok.get_vocab_size()):
+        token = tok.id_to_token(i)
+        if token in special:
+            lengths.append(0)
+            continue
+        if not set(token) <= alphabet:
+            raise ValueError(f"바이트 수준 문자가 아닌 토큰: {i} {token!r}")
+        lengths.append(len(token))
+    return lengths
+
+
 def save_tokenizer(tok: Tokenizer, path: str | Path, meta: dict) -> str:
     """tokenizer.json과 tokenizer_meta.json을 쓰고 tokenizer.json의 SHA-256을 돌려준다. 덮어쓰지 않는다."""
     path = Path(path)
