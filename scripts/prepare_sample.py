@@ -1,12 +1,14 @@
-"""Phase 0 표본 정제와 통계 (설계안 v0.2 7-1 ~ 7-3절)
+"""표본(Phase 0)·전체(Phase 0b) 정제와 통계 (설계안 v0.2 7-1 ~ 7-3절)
 
 전처리 → 출처별 필터 → 개인정보 치환 → 정확 중복(출처 내·출처 간) → 평가 세트 13-gram 오염 → 분할(문서 ID 해시)
 → data/sample/clean/<출처>.parquet 와 runs/phase0/clean_stats.json
 근사 중복(MinHash)은 near_dup_sample.py가 출처마다 최대 20,000 문서 표본에서 잰다 (표본 안에서만 짝을 찾으므로 하한값).
 
-    uv run --group data python scripts/prepare_sample.py
+    uv run --group data python scripts/prepare_sample.py                # Phase 0 표본
+    uv run --group data python scripts/prepare_sample.py --stage full   # Phase 0b: 표본 + data/0b 추가분 → data/full/clean
 """
 
+import argparse
 import gzip
 import hashlib
 import json
@@ -54,9 +56,19 @@ def split_of(doc_id: str) -> str:
     return "val" if h < 5 else "test" if h < 10 else "train"
 
 
-def iter_records(name: str, entry: dict):
-    for f in entry["local_files"]:
-        path = SAMPLE / f["path"]
+def input_files(stage: str) -> dict[str, list[Path]]:
+    """출처별 입력 파일. full은 표본 파일 뒤에 0b 추가분을 붙인다 (표본의 문서 순번과 분할이 그대로 유지됨)"""
+    manifest = json.loads((SAMPLE / "manifest.json").read_text())
+    files = {name: [SAMPLE / f["path"] for f in manifest["sources"][name]["local_files"]] for name in PRETRAIN}
+    if stage == "full":
+        extra = json.loads(Path("data/0b/manifest.json").read_text())["items"]
+        for item in sorted(extra.values(), key=lambda i: i["file"]):
+            files[item["source"]].append(Path("data/0b") / item["local"])
+    return files
+
+
+def iter_records(paths: list[Path]):
+    for path in paths:
         if path.suffix == ".parquet":
             pf = pq.ParquetFile(path)
             for batch in pf.iter_batches(batch_size=2000):
@@ -104,23 +116,32 @@ def flush(rows: list, writer, name: str):
 
 
 def main() -> None:
-    manifest = json.loads((SAMPLE / "manifest.json").read_text())
+    global CLEAN, STATS
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stage", choices=["sample", "full"], default="sample")
+    args = parser.parse_args()
+    if args.stage == "full":
+        CLEAN, STATS = Path("data/full/clean"), Path("runs/phase0b/clean_stats.json")
+    if any(CLEAN.glob("*.parquet")):
+        raise FileExistsError(f"{CLEAN}에 이미 정제 결과가 있다 (덮어쓰지 않음)")
+    files = input_files(args.stage)
     CLEAN.mkdir(parents=True, exist_ok=True)
+    STATS.parent.mkdir(parents=True, exist_ok=True)
     contam_grams, contam_info = eval_ngrams()
     print(f"평가 세트 13-gram {contam_info}", flush=True)
     first_source: dict[bytes, str] = {}  # 정확 중복: 다이제스트 → 처음 나온 출처
-    stats = {"split_seed": SPLIT_SEED, "contamination": contam_info, "sources": {}}
+    stats = {"stage": args.stage, "split_seed": SPLIT_SEED, "contamination": contam_info, "sources": {},
+             "inputs": {k: [str(p) for p in v] for k, v in files.items()}}
     kept_texts: dict[str, list[str]] = {}
 
     for name, spec in PRETRAIN.items():
-        entry = manifest["sources"][name]
         t0 = time.time()
         s = Counter()
         reasons, pii, cross_dup = Counter(), Counter(), Counter()
         rows, reservoir = [], []
         writer = None
         rng_res = random.Random(name)
-        for i, r in enumerate(iter_records(name, entry)):
+        for i, r in enumerate(iter_records(files[name])):
             raw = r.get(spec["text"]) or ""
             s["docs_in"] += 1
             s["chars_in"] += len(raw)
