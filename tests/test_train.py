@@ -89,6 +89,22 @@ def test_stops_and_reports_when_all_sources_exhausted(setup, capsys):
     assert set(ckpt["sampler"]["exhausted"]) == {"a", "b"}
 
 
+def test_stop_file_saves_checkpoint_and_resume_continues(setup):
+    tmp, make_data = setup
+    data = make_data(5000, 100.0)
+    out = tmp / "run"
+    assert train.main(args(out, data, steps=3)) == 0
+    (out / "STOP").write_text("[monitor] 시험용 정지 요청\n", encoding="utf-8")
+    resume = ["--resume", str(out / "last.pt")] + args(out, steps=6)[2:]
+    assert train.main(resume) == train.EXIT_STOPPED
+    stops = (out / "stops.csv").read_text(encoding="utf-8")
+    assert "시험용 정지 요청" in stops
+    assert torch.load(out / "last.pt", weights_only=True)["step"] == 3  # 업데이트 없이 저장만
+    (out / "STOP").unlink()
+    assert train.main(resume) == 0
+    assert torch.load(out / "last.pt", weights_only=True)["step"] == 6
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA 필요")
 def test_full_loop_on_cuda(setup):
     # CPU 테스트만으로는 장치 불일치(평가의 바이트 길이 표 인덱싱)를 잡지 못했다 (Phase 0 Smoke에서 발견)

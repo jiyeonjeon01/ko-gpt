@@ -35,7 +35,7 @@ from tokenizer import file_sha256, load_tokenizer, token_byte_lengths
 CHECKPOINT_VERSION = 1
 SPIKE_LOSS_FACTOR = 1.5  # 직전 50 Step 평균보다 이만큼 크면 급등으로 기록
 SPIKE_GRAD_FACTOR = 10.0  # Clipping 전 Gradient Norm이 grad_clip의 이 배수를 넘으면 기록
-EXIT_NONFINITE, EXIT_VRAM, EXIT_EXHAUSTED = 3, 4, 5
+EXIT_NONFINITE, EXIT_VRAM, EXIT_EXHAUSTED, EXIT_STOPPED = 3, 4, 5, 6
 
 
 # ---- 데이터 설정 ----
@@ -136,6 +136,13 @@ def save_checkpoint(path: Path, state: dict) -> None:
     try:
         torch.save(state, tmp)
         os.replace(tmp, path)
+        # 방금 쓴 Checkpoint(110M 약 1.3GB)가 WSL 파일 캐시로 남아 호스트 메모리를 차지하지 않게 버린다
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -189,7 +196,7 @@ def main(argv=None) -> int:
         if not (args.model and args.data and args.out_dir):
             raise ValueError("새 학습은 --model, --data, --out-dir가 필요하다")
         out_dir = args.out_dir
-        if (out_dir / "last.pt").exists() or (out_dir / "steps.csv").exists():
+        if (out_dir / "last.pt").exists() or (out_dir / "steps.csv").exists() or (out_dir / "STOP").exists():
             raise FileExistsError(f"{out_dir}에 이전 결과가 있다. 다른 --out-dir을 쓰거나 --resume")
         data_path = args.data
 
@@ -251,6 +258,15 @@ def main(argv=None) -> int:
     vram_checked = False
     model.train()
     while step < args.max_steps:
+        stop_file = out_dir / "STOP"
+        if stop_file.exists():  # 감시 스크립트(scripts/monitor.py)나 사람이 요청한 안전 정지
+            reason = stop_file.read_text(encoding="utf-8").strip() or "사유 없음"
+            save_checkpoint(out_dir / "last.pt", state())
+            append_csv(out_dir / "stops.csv", {"step": step, "tokens_seen": tokens_seen, "reason": reason,
+                                               "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            print(f"중단 요청으로 정지 (step {step}): {reason}. last.pt 저장 완료. "
+                  f"원인 확인 후 STOP 파일을 지우고 --resume으로 재개", flush=True)
+            return EXIT_STOPPED
         lr = wsd_lr(step, optim_cfg)
         t_data = time.perf_counter()
         try:
