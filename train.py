@@ -253,6 +253,9 @@ def main(argv=None) -> int:
                     "torch_cuda": torch.cuda.get_rng_state_all() if device == "cuda" else None},
         }
 
+    if not args.resume:  # 학습 전 상태: 생성 결과 비교와 재현용
+        save_checkpoint(out_dir / "init.pt", state())
+
     recent: list[float] = []
     last_save = time.monotonic()
     vram_checked = False

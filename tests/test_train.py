@@ -50,6 +50,9 @@ def test_resume_matches_uninterrupted_run(setup):
     assert train.main(args(tmp / "split", data, steps=3)) == 0
     assert train.main(["--resume", str(tmp / "split" / "last.pt")] + args(tmp / "split", steps=6)[2:]) == 0
 
+    init = torch.load(tmp / "full" / "init.pt", weights_only=True)
+    assert init["step"] == 0 and init["tokens_seen"] == 0
+    assert not (tmp / "split" / "init.pt").stat().st_mtime > (tmp / "split" / "last.pt").stat().st_mtime
     full = torch.load(tmp / "full" / "last.pt", weights_only=True)
     split = torch.load(tmp / "split" / "last.pt", weights_only=True)
     assert split["step"] == full["step"] == 6 and split["resume_count"] == 1
