@@ -1,5 +1,6 @@
 """학습 루프: 재개 동일성, 데이터 소진 시 중단, 덮어쓰기 방지 (CPU)"""
 
+import csv
 import json
 
 import numpy as np
@@ -123,3 +124,63 @@ def test_eval_writes_per_source_bpb(setup):
     assert train.main(args(tmp / "run", data, steps=3)) == 0
     header = (tmp / "run" / "eval.csv").read_text().splitlines()[0].split(",")
     assert {"a_bpb", "b_bpb", "a_loss", "seen_a"} <= set(header)
+
+
+# ---- 장시간 학습 안전장치: 마일스톤, 감쇠 직전, 디스크 점검, 저장 중 메모리 기록 ----
+
+
+def test_milestones_and_pre_decay_are_kept(setup):
+    tmp, make_data = setup
+    data = make_data(5000, 100.0)
+    out = tmp / "run"
+    # Step당 2 × 2 × 16 = 64토큰 → 128토큰마다 마일스톤: step 2, 4, 6. 감쇠 2 Step → step 4 시작 전 보관
+    assert train.main(args(out, data, steps=6, extra=["--milestone-tokens", "128", "--decay-steps", "2"])) == 0
+    names = sorted(p.name for p in (out / "milestones").iterdir())
+    assert names == ["step000002_tok0M.pt", "step000004_tok0M.pt", "step000006_tok0M.pt"]
+    for n, step in zip(names, (2, 4, 6)):
+        assert torch.load(out / "milestones" / n, weights_only=True)["step"] == step
+    pre = torch.load(out / "pre_decay.pt", weights_only=True)
+    assert pre["step"] == 4  # 감쇠 lr로 업데이트하기 전
+    rows = list(csv.DictReader(open(out / "checkpoints.csv", encoding="utf-8")))
+    assert {"init.pt", "pre_decay.pt", "last.pt"} <= {r["file"] for r in rows}
+    for r in rows:  # 저장 중 RAM 측정값이 모두 기록된다
+        assert int(r["bytes"]) > 0 and int(r["rss_peak_mb"]) >= int(r["rss_before_mb"]) > 0
+        assert int(r["wsl_avail_min_mb"]) <= int(r["wsl_avail_before_mb"])
+
+
+def test_resume_does_not_overwrite_milestone(setup):
+    tmp, make_data = setup
+    data = make_data(5000, 100.0)
+    out = tmp / "run"
+    extra = ["--milestone-tokens", "128", "--save-minutes", "0"]
+    assert train.main(args(out, data, steps=3, extra=extra)) == 0  # step 2 마일스톤, last.pt는 step 3
+    first = (out / "milestones" / "step000002_tok0M.pt").stat().st_mtime_ns
+    # step 1 Checkpoint에서 재개하는 상황을 만든다: step 2를 다시 지나간다
+    ck = torch.load(out / "milestones" / "step000002_tok0M.pt", weights_only=True)
+    ck["step"], ck["tokens_seen"] = 1, 64
+    torch.save(ck, out / "early.pt")
+    assert train.main(["--resume", str(out / "early.pt")] + args(out, steps=3)[2:] + extra) == 0
+    assert (out / "milestones" / "step000002_tok0M.pt").stat().st_mtime_ns == first
+    assert (out / "milestones" / "step000002_tok0M_resume1.pt").exists()
+
+
+def test_disk_check_refuses_to_write(setup, monkeypatch, capsys):
+    tmp, make_data = setup
+    data = make_data(5000, 100.0)
+    out = tmp / "run"
+    assert train.main(args(out, data, steps=3)) == 0
+    before = (out / "last.pt").read_bytes()
+    real = train.shutil.disk_usage
+    monkeypatch.setattr(train.shutil, "disk_usage", lambda p: real(p)._replace(free=10**6))
+    code = train.main(["--resume", str(out / "last.pt")] + args(out, steps=6)[2:])
+    assert code == train.EXIT_DISK
+    assert "디스크 여유" in capsys.readouterr().out
+    assert (out / "last.pt").read_bytes() == before  # 기존 파일은 그대로
+    assert not list(out.glob("*.tmp"))
+
+
+def test_state_nbytes_matches_saved_size(tmp_path):
+    state = {"model": {"w": torch.zeros(1000, 100)}, "opt": [torch.ones(500, dtype=torch.float64)], "step": 3}
+    assert train.state_nbytes(state) == 1000 * 100 * 4 + 500 * 8
+    row = train.save_checkpoint(tmp_path / "x.pt", state)
+    assert abs(row["bytes"] - train.state_nbytes(state)) / train.state_nbytes(state) < 0.05

@@ -57,3 +57,30 @@ def test_warnings_do_not_stop():
     j = Judge()
     reason, warnings = j.update(sample(win=1500, temp=86))
     assert reason is None and len(warnings) == 2
+
+
+# ---- 메모리 경고 시 Windows 상위 프로세스 기록 ----
+
+from monitor import WIN_AVAIL_STOP_MB, WIN_AVAIL_WARN_MB, SnapshotPolicy, format_snapshot, parse_top_processes
+
+
+def test_stop_thresholds_unchanged():
+    assert (WIN_AVAIL_STOP_MB, WIN_AVAIL_WARN_MB) == (1024, 2048)
+
+
+def test_snapshot_only_in_warning_zone_and_rate_limited():
+    pol = SnapshotPolicy(min_gap_s=300)
+    assert not pol.due(5000, 0)
+    assert not pol.due(None, 0)
+    assert pol.due(1500, 10)
+    assert not pol.due(1400, 200)  # 5분 안 반복 경고
+    assert pol.due(1300, 311)
+
+
+def test_parse_and_format_top_processes():
+    text = "chrome\t1674\t18\nvmmemWSL\t5905\t1\nbad line\nclaude\t772.4\t9\r\n"
+    rows = parse_top_processes(text, n=2)
+    assert rows == [{"name": "vmmemWSL", "mb": 5905, "count": 1}, {"name": "chrome", "mb": 1674, "count": 18}]
+    out = format_snapshot("t", 1500, rows)
+    assert "1500MB" in out and "vmmemWSL" in out and "5,905MB" in out
+    assert "얻지 못함" in format_snapshot("t", 1500, None)

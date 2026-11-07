@@ -18,8 +18,10 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -35,7 +37,8 @@ from tokenizer import file_sha256, load_tokenizer, token_byte_lengths
 CHECKPOINT_VERSION = 1
 SPIKE_LOSS_FACTOR = 1.5  # 직전 50 Step 평균보다 이만큼 크면 급등으로 기록
 SPIKE_GRAD_FACTOR = 10.0  # Clipping 전 Gradient Norm이 grad_clip의 이 배수를 넘으면 기록
-EXIT_NONFINITE, EXIT_VRAM, EXIT_EXHAUSTED, EXIT_STOPPED = 3, 4, 5, 6
+EXIT_NONFINITE, EXIT_VRAM, EXIT_EXHAUSTED, EXIT_STOPPED, EXIT_DISK = 3, 4, 5, 6, 7
+DISK_MARGIN_BYTES = 2 * 10**9  # 저장 후에도 남아야 할 디스크 여유
 
 
 # ---- 데이터 설정 ----
@@ -130,9 +133,70 @@ def gpu_memory() -> dict:
 # ---- Checkpoint ----
 
 
-def save_checkpoint(path: Path, state: dict) -> None:
+class DiskSpaceError(RuntimeError):
+    pass
+
+
+def state_nbytes(obj) -> int:
+    """Checkpoint에 들어갈 텐서 바이트 합 (저장 파일 크기의 근사)"""
+    if isinstance(obj, torch.Tensor):
+        return obj.numel() * obj.element_size()
+    if isinstance(obj, dict):
+        return sum(state_nbytes(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return sum(state_nbytes(v) for v in obj)
+    return 0
+
+
+def _proc_kb(path: str, key: str) -> int | None:
+    try:
+        for line in open(path, encoding="ascii"):
+            if line.startswith(key + ":"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return None
+
+
+class _MemSampler(threading.Thread):
+    """저장하는 동안 이 프로세스 RSS 최대값과 WSL MemAvailable 최소값을 20ms마다 잰다"""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.stop_event = threading.Event()
+        self.rss_peak_kb = _proc_kb("/proc/self/status", "VmRSS") or 0
+        self.avail_min_kb = _proc_kb("/proc/meminfo", "MemAvailable") or 0
+
+    def run(self):
+        while not self.stop_event.wait(0.02):
+            rss = _proc_kb("/proc/self/status", "VmRSS")
+            avail = _proc_kb("/proc/meminfo", "MemAvailable")
+            if rss is not None:
+                self.rss_peak_kb = max(self.rss_peak_kb, rss)
+            if avail is not None:
+                self.avail_min_kb = min(self.avail_min_kb, avail)
+
+
+def save_checkpoint(path: Path, state: dict, log_csv: Path | None = None, step: int | None = None,
+                    margin_bytes: int = DISK_MARGIN_BYTES) -> dict:
+    """원자적 저장 (임시 파일 → os.replace). 저장 전 디스크 여유를 확인하고, 저장 중 CPU RAM 변화를 잰다.
+
+    여유가 (예상 크기 × 1.05 + margin_bytes)보다 작으면 쓰지 않고 DiskSpaceError. 기존 파일은 그대로 남는다.
+    log_csv를 주면 측정값을 한 줄 덧붙인다. 반환: 측정값
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    expected = state_nbytes(state)
+    free = shutil.disk_usage(path.parent).free
+    if free < expected * 1.05 + margin_bytes:
+        raise DiskSpaceError(f"{path.name} 저장 전 디스크 여유 {free / 1e9:.2f}GB < 필요 "
+                             f"{(expected * 1.05 + margin_bytes) / 1e9:.2f}GB (예상 크기 {expected / 1e9:.2f}GB + 여유)")
     tmp = path.with_name(path.name + ".tmp")
+    rss_before = _proc_kb("/proc/self/status", "VmRSS")
+    avail_before = _proc_kb("/proc/meminfo", "MemAvailable")
+    cached_before = _proc_kb("/proc/meminfo", "Cached")
+    sampler = _MemSampler()
+    sampler.start()
+    t0 = time.perf_counter()
     try:
         torch.save(state, tmp)
         os.replace(tmp, path)
@@ -146,6 +210,32 @@ def save_checkpoint(path: Path, state: dict) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    finally:
+        sampler.stop_event.set()
+        sampler.join()
+    mb = lambda kb: "" if kb is None else round(kb / 1024)  # noqa: E731
+    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "step": "" if step is None else step, "file": path.name,
+           "bytes": path.stat().st_size, "seconds": f"{time.perf_counter() - t0:.2f}",
+           "disk_free_gb_before": f"{free / 1e9:.1f}",
+           "rss_before_mb": mb(rss_before), "rss_peak_mb": mb(sampler.rss_peak_kb),
+           "rss_after_mb": mb(_proc_kb("/proc/self/status", "VmRSS")),
+           "rss_peak_increase_mb": "" if rss_before is None else round((sampler.rss_peak_kb - rss_before) / 1024),
+           "wsl_avail_before_mb": mb(avail_before), "wsl_avail_min_mb": mb(sampler.avail_min_kb),
+           "wsl_avail_after_mb": mb(_proc_kb("/proc/meminfo", "MemAvailable")),
+           "wsl_cached_before_mb": mb(cached_before), "wsl_cached_after_mb": mb(_proc_kb("/proc/meminfo", "Cached"))}
+    if log_csv is not None:
+        append_csv(log_csv, row)
+    return row
+
+
+def keep_name(path: Path, resume_count: int) -> Path:
+    """마일스톤·감쇠 직전 파일은 덮어쓰지 않는다. 재개 후 같은 step을 다시 지나면 _resume{n}을 붙인다"""
+    if not path.exists():
+        return path
+    alt = path.with_name(f"{path.stem}_resume{resume_count}{path.suffix}")
+    if alt.exists():
+        raise FileExistsError(f"{alt}가 이미 있다")
+    return alt
 
 
 # ---- 학습 ----
@@ -170,12 +260,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--eval-interval", type=int, default=250)
     p.add_argument("--eval-batches", type=int, default=8)
     p.add_argument("--save-minutes", type=float, default=30.0)
+    p.add_argument("--milestone-tokens", type=int, default=0,
+                   help="이 토큰 수마다 milestones/에 따로 보관 (0이면 끔). 110M 계획: 200,000,000")
     p.add_argument("--vram-limit-mib", type=int, default=10500,
                    help="PyTorch reserved 상한. GPU 전체 사용량은 물리 용량 - 512MiB를 넘으면 멈춘다")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
+    try:
+        return run(argv)
+    except DiskSpaceError as e:
+        print(f"중단: {e}. 디스크를 정리한 뒤 --resume으로 재개", flush=True)
+        return EXIT_DISK
+
+
+def run(argv=None) -> int:
     args = parse_args(argv)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # 학습 경로를 바꾸는 설정: 재개 시 Checkpoint와 같아야 한다 (max_steps·decay_steps 연장은 허용)
@@ -253,8 +353,10 @@ def main(argv=None) -> int:
                     "torch_cuda": torch.cuda.get_rng_state_all() if device == "cuda" else None},
         }
 
+    ckpt_log = out_dir / "checkpoints.csv"
+    decay_start = args.max_steps - args.decay_steps if args.decay_steps > 0 else None
     if not args.resume:  # 학습 전 상태: 생성 결과 비교와 재현용
-        save_checkpoint(out_dir / "init.pt", state())
+        save_checkpoint(out_dir / "init.pt", state(), ckpt_log, step)
 
     recent: list[float] = []
     last_save = time.monotonic()
@@ -264,19 +366,21 @@ def main(argv=None) -> int:
         stop_file = out_dir / "STOP"
         if stop_file.exists():  # 감시 스크립트(scripts/monitor.py)나 사람이 요청한 안전 정지
             reason = stop_file.read_text(encoding="utf-8").strip() or "사유 없음"
-            save_checkpoint(out_dir / "last.pt", state())
+            save_checkpoint(out_dir / "last.pt", state(), ckpt_log, step)
             append_csv(out_dir / "stops.csv", {"step": step, "tokens_seen": tokens_seen, "reason": reason,
                                                "time": time.strftime("%Y-%m-%d %H:%M:%S")})
             print(f"중단 요청으로 정지 (step {step}): {reason}. last.pt 저장 완료. "
                   f"원인 확인 후 STOP 파일을 지우고 --resume으로 재개", flush=True)
             return EXIT_STOPPED
+        if step == decay_start:  # 첫 감쇠 업데이트 직전 상태 (WSD: 여기서 학습을 연장할 수 있다)
+            save_checkpoint(keep_name(out_dir / "pre_decay.pt", resume_count), state(), ckpt_log, step)
         lr = wsd_lr(step, optim_cfg)
         t_data = time.perf_counter()
         try:
             draws = [sampler.sample(args.micro_batch, gen) for _ in range(args.grad_accum)]
         except DataExhausted as e:
             print(f"중단: 모든 출처가 노출 상한에 도달했다 (step {step})\n{e}", flush=True)
-            save_checkpoint(out_dir / "last.pt", state())
+            save_checkpoint(out_dir / "last.pt", state(), ckpt_log, step)
             return EXIT_EXHAUSTED
         data_seconds = time.perf_counter() - t_data
         if device == "cuda":
@@ -339,8 +443,12 @@ def main(argv=None) -> int:
                   + f" bpb | {tokens_per_step / step_seconds:,.0f} tok/s (연산), VRAM {mem.get('max_reserved_mib')} MiB",
                   flush=True)
         if is_eval or time.monotonic() - last_save > args.save_minutes * 60:
-            save_checkpoint(out_dir / "last.pt", state())
+            save_checkpoint(out_dir / "last.pt", state(), ckpt_log, step)
             last_save = time.monotonic()
+        if args.milestone_tokens > 0 and \
+                tokens_seen // args.milestone_tokens > (tokens_seen - tokens_per_step) // args.milestone_tokens:
+            name = f"step{step:06d}_tok{tokens_seen // 10**6}M.pt"
+            save_checkpoint(keep_name(out_dir / "milestones" / name, resume_count), state(), ckpt_log, step)
 
     print(sampler.report(), flush=True)
     return 0

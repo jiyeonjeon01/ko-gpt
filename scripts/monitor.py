@@ -62,6 +62,63 @@ def gpu() -> dict:
         return {}
 
 
+TOP_PROCESSES_PS = (
+    'Get-Process | Group-Object ProcessName | ForEach-Object { '
+    '"{0}`t{1}`t{2}" -f $_.Name, [math]::Round(($_.Group | Measure-Object WorkingSet64 -Sum).Sum / 1MB), $_.Count }'
+)
+SNAPSHOT_MIN_GAP_S = 300  # 경고가 이어져도 상위 프로세스 기록은 5분에 한 번
+
+
+def parse_top_processes(text: str, n: int = 15) -> list[dict]:
+    """PowerShell 출력(이름<TAB>MB<TAB>개수 줄)을 MB 내림차순 상위 n개로"""
+    rows = []
+    for line in text.splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 3:
+            continue
+        try:
+            rows.append({"name": parts[0], "mb": int(float(parts[1])), "count": int(parts[2])})
+        except ValueError:
+            continue
+    return sorted(rows, key=lambda r: -r["mb"])[:n]
+
+
+def windows_top_processes(n: int = 15) -> list[dict] | None:
+    """Windows 프로세스 이름별 Working Set 합계 상위 n개 (실패하면 None)"""
+    try:
+        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", TOP_PROCESSES_PS],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    rows = parse_top_processes(out, n)
+    return rows or None
+
+
+class SnapshotPolicy:
+    """메모리 경고 구간(Windows 사용 가능 RAM < 경고 기준)에서 상위 프로세스를 남길지 정한다. 정지 판단과는 무관"""
+
+    def __init__(self, min_gap_s: float = SNAPSHOT_MIN_GAP_S):
+        self.min_gap_s = min_gap_s
+        self.last: float | None = None
+
+    def due(self, avail_mb: int | None, now: float) -> bool:
+        if avail_mb is None or avail_mb >= WIN_AVAIL_WARN_MB:
+            return False
+        if self.last is not None and now - self.last < self.min_gap_s:
+            return False
+        self.last = now
+        return True
+
+
+def format_snapshot(time_str: str, avail_mb: int, rows: list[dict] | None) -> str:
+    lines = [f"[{time_str}] Windows 사용 가능 RAM {avail_mb}MB (경고 기준 {WIN_AVAIL_WARN_MB}MB 미만) — 상위 프로세스"]
+    if rows is None:
+        lines.append("  (프로세스 목록을 얻지 못함)")
+    else:
+        lines += [f"  {r['mb']:>7,}MB  {r['name']} ×{r['count']}" for r in rows]
+    return "\n".join(lines) + "\n"
+
+
 def train_progress(out_dir: Path) -> dict:
     path = out_dir / "steps.csv"
     if not path.exists():
@@ -127,7 +184,7 @@ def main() -> None:
     args = p.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     log = args.out_dir / "monitor.csv"
-    judge, requested = Judge(), False
+    judge, requested, snap = Judge(), False, SnapshotPolicy()
     fields = ["time", "win_avail_mb", "wsl_used_mb", "wsl_cache_mb", "wsl_avail_mb", "swap_used_mb", "gpu_used_mb",
               "gpu_total_mb", "gpu_temp_c", "gpu_power_w", "gpu_util_pct", "step", "tokens_per_s", "loss",
               "warnings", "stop_reason"]
@@ -141,6 +198,9 @@ def main() -> None:
                  **wsl_memory_mb(), **gpu(), **train_progress(args.out_dir)}
             reason, warnings = judge.update(s)
             s["warnings"] = "; ".join(warnings)
+            if snap.due(s["win_avail_mb"], time.monotonic()):
+                with open(args.out_dir / "memory_snapshots.log", "a", encoding="utf-8") as sf:
+                    sf.write(format_snapshot(s["time"], s["win_avail_mb"], windows_top_processes()))
             if reason and not requested:
                 (args.out_dir / "STOP").write_text(f"[monitor {s['time']}] {reason}\n", encoding="utf-8")
                 s["stop_reason"] = reason
