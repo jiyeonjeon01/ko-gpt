@@ -9,3 +9,5 @@
 - 기존 실험 결과(`runs/`)를 덮어쓰지 않는다
 - 커밋은 `~/.claude/skills/to-new-session/references/commit-convention.md` 규칙 (Windows: `C:\Users\jiyeo\.claude\...`)
 - 추정은 (추정), 측정은 (측정)으로 구분해서 보고한다
+- 실험 결과에는 실행 횟수(단일 실행인지)를 적는다. 같은 설정·seed라도 GPU 비결정성으로 결과가 달라진다 (Phase 1 측정: 같은 설정 두 실행의 step 250 한국어 BPB 차 0.059). 이보다 작은 차이는 반복 실행 없이 결론으로 쓰지 않는다
+- 평가 세트(`eval/chat120`, `eval/prompts_ko20.json`)는 SFT 학습 데이터에 넣지 않는다. 고정본은 모델 응답을 본 뒤 고치지 않는다
