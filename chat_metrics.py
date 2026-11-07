@@ -47,8 +47,18 @@ def _norm(s: str) -> str:
 
 
 def contains_answer(text: str, accept: list[str]) -> bool:
+    """허용 답 중 하나가 들어 있는가 (공백 무시·소문자). 숫자로 시작·끝나는 허용 답은 앞뒤에 다른 숫자가 붙으면 인정하지 않는다
+    (예: 허용 답 "5"는 "15"에서, "8시"는 "18시"에서 인정하지 않음)"""
     t = _norm(text)
-    return any(_norm(a) in t for a in accept)
+    for a in accept:
+        na = _norm(a)
+        if not na:
+            continue
+        pre = r"(?<![0-9])" if na[0].isdigit() else ""
+        post = r"(?![0-9])" if na[-1].isdigit() else ""
+        if re.search(pre + re.escape(na) + post, t):
+            return True
+    return False
 
 
 def item_metrics(item: dict, gen: dict) -> dict:

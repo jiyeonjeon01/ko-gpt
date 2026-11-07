@@ -117,6 +117,16 @@ def test_collapse_and_distinct():
     assert cm.distinct2([5]) is None
 
 
+def test_answer_inclusion_respects_digit_boundaries():
+    assert cm.contains_answer("정답은 5개예요", ["5개", "5"])
+    assert not cm.contains_answer("15개예요", ["5"])
+    assert not cm.contains_answer("18시예요", ["8시"])
+    assert cm.contains_answer("저녁 8시예요", ["8시"])
+    assert not cm.contains_answer("2,0000원", ["2,000원"]) and cm.contains_answer("2,000원", ["2,000원"])
+    assert cm.contains_answer("It is PARIS.", ["Paris"])
+    assert not cm.contains_answer("1년은 120일", ["12"])
+
+
 def test_answer_inclusion_and_aggregate():
     items = [
         {"id": "f1", "category": "사실", "expected_language": "ko", "reference": {"kind": "exact", "accept": ["2,000원", "2000원"]}},
