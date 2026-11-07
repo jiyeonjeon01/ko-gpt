@@ -58,6 +58,24 @@ def user_text(item: dict) -> str:
     return "\n".join(m["content"] for m in item["messages"] if m["role"] == "user")
 
 
+class EvalGuard:
+    """평가 문항 목록 [(id, 사용자 발화)]과 비슷한 사용자 발화가 있는 대화를 찾는다 (SFT 데이터 제외용)"""
+
+    def __init__(self, prompts: list[tuple[str, str]]):
+        self.p = [(eid, grams(t), normalize(t)) for eid, t in prompts]
+
+    def hit(self, messages: list[dict]) -> str | None:
+        for m in messages:
+            if m["role"] != "user":
+                continue
+            tg, tn = grams(m["content"]), normalize(m["content"])
+            for eid, a, an in self.p:
+                j, c = scores(a, tg)
+                if an == tn or flagged(j, c, len(a), len(tg)):
+                    return eid
+        return None
+
+
 # ---- 비교 대상 ----
 
 

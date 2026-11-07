@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
-from eval_overlap import grams, normalize, scores, flagged  # noqa: E402
+from eval_overlap import EvalGuard  # noqa: E402
 from s11_convert import load_eval_prompts  # noqa: E402
 from sft import render_conversation  # noqa: E402
 from sft_stats import aya, dolly, oasst2  # noqa: E402
@@ -42,22 +42,6 @@ def s11():
         for line in open(f, encoding="utf-8"):
             r = json.loads(line)
             yield "S11_direct", "ko", r["messages"]
-
-
-class EvalGuard:
-    def __init__(self, prompts: list[tuple[str, str]]):
-        self.p = [(eid, grams(t), normalize(t)) for eid, t in prompts]
-
-    def hit(self, messages: list[dict]) -> str | None:
-        for m in messages:
-            if m["role"] != "user":
-                continue
-            tg, tn = grams(m["content"]), normalize(m["content"])
-            for eid, a, an in self.p:
-                j, c = scores(a, tg)
-                if an == tn or flagged(j, c, len(a), len(tg)):
-                    return eid
-        return None
 
 
 def main() -> None:
