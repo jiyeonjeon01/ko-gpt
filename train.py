@@ -259,6 +259,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=1337)
+    p.add_argument("--deterministic", action="store_true",
+                   help="결정론 모드 (cuBLAS workspace 고정 + torch.use_deterministic_algorithms). 재현성_조사_보고서 참고")
     p.add_argument("--eval-interval", type=int, default=250)
     p.add_argument("--eval-batches", type=int, default=8)
     p.add_argument("--save-minutes", type=float, default=30.0)
@@ -279,6 +281,9 @@ def main(argv=None) -> int:
 
 def run(argv=None) -> int:
     args = parse_args(argv)
+    if args.deterministic:  # CUDA를 처음 쓰기 전에 설정해야 한다
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # 학습 경로를 바꾸는 설정: 재개 시 Checkpoint와 같아야 한다 (max_steps·decay_steps 연장은 허용)
     resume_keys = ("micro_batch", "grad_accum", "max_lr", "warmup_steps", "weight_decay", "grad_clip", "seed")
@@ -291,6 +296,8 @@ def run(argv=None) -> int:
             raise ValueError("재개는 Checkpoint가 있는 폴더에서만 한다 (기존 결과 보호)")
         run = ckpt["run"]
         diffs = [k for k in resume_keys if run[k] != getattr(args, k)]
+        if run.get("deterministic", False) != args.deterministic:  # 이전 Checkpoint에는 값이 없다 (= False)
+            diffs.append("deterministic")
         if diffs:
             raise ValueError(f"학습 설정이 Checkpoint와 다르다: {diffs}")
         model_cfg = GPTConfig(**ckpt["model_config"])
@@ -339,7 +346,8 @@ def run(argv=None) -> int:
         step, tokens_seen, resume_count = ckpt["step"], ckpt["tokens_seen"], ckpt["resume_count"] + 1
         del ckpt
 
-    run_info = {**{k: getattr(args, k) for k in resume_keys}, "data": str(data_path), "model": args.model}
+    run_info = {**{k: getattr(args, k) for k in resume_keys}, "data": str(data_path), "model": args.model,
+                "deterministic": args.deterministic}
     tokens_per_step = args.micro_batch * args.grad_accum * model_cfg.block_size
     print(f"device {device} | 파라미터 {model.num_parameters():,} | {tokens_per_step:,} 토큰/Step "
           f"(micro {args.micro_batch} × accum {args.grad_accum} × {model_cfg.block_size}) | "

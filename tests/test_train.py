@@ -184,3 +184,19 @@ def test_state_nbytes_matches_saved_size(tmp_path):
     assert train.state_nbytes(state) == 1000 * 100 * 4 + 500 * 8
     row = train.save_checkpoint(tmp_path / "x.pt", state)
     assert abs(row["bytes"] - train.state_nbytes(state)) / train.state_nbytes(state) < 0.05
+
+
+def test_deterministic_flag_is_recorded_and_checked_on_resume(setup):
+    tmp, make_data = setup
+    data = make_data(5000, 100.0)
+    try:
+        assert train.main(args(tmp / "det", data, steps=3, extra=["--deterministic"])) == 0
+        assert torch.are_deterministic_algorithms_enabled()
+        ck = torch.load(tmp / "det" / "last.pt", weights_only=True)
+        assert ck["run"]["deterministic"] is True
+        with pytest.raises(ValueError, match="deterministic"):  # 결정론 여부를 바꿔 재개하면 거부
+            train.main(["--resume", str(tmp / "det" / "last.pt")] + args(tmp / "det", steps=6)[2:])
+    finally:
+        torch.use_deterministic_algorithms(False)
+    assert train.main(args(tmp / "nondet", data, steps=3)) == 0
+    assert torch.load(tmp / "nondet" / "last.pt", weights_only=True)["run"]["deterministic"] is False
