@@ -61,6 +61,13 @@ def contains_answer(text: str, accept: list[str]) -> bool:
     return False
 
 
+def matches_regex(text: str, patterns: list[str]) -> bool:
+    """허용 답 정규식 중 하나가 원문(공백 유지, 소문자)에 맞는가. 짧은 답이 다른 단어 안에 들어 있는 오채점을 막을 때 쓴다
+    (예: f13 "물"이 "동물"에서 맞지 않게, k09 "in"이 "print"에서 맞지 않게)"""
+    t = text.lower()
+    return any(re.search(p, t) for p in patterns)
+
+
 def item_metrics(item: dict, gen: dict) -> dict:
     ids = gen["completion_ids"]
     m = {"stopped": gen["stop_reason"] == "im_end", "stop_reason": gen["stop_reason"],
@@ -69,7 +76,10 @@ def item_metrics(item: dict, gen: dict) -> dict:
     m["language_match"] = m["language"] == item["expected_language"]
     ref = item["reference"]
     if ref["kind"] == "exact":
-        m["answer_included"] = contains_answer(gen["completion"], ref["accept"])
+        if ref.get("accept_regex"):
+            m["answer_included"] = matches_regex(gen["completion"], ref["accept_regex"])
+        else:
+            m["answer_included"] = contains_answer(gen["completion"], ref["accept"])
     return m
 
 

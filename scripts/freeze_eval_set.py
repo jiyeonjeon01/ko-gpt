@@ -10,6 +10,7 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 from collections import Counter
@@ -49,6 +50,11 @@ def validate(doc: dict) -> list[str]:
             errors.append(f"{it.get('id')}: reference.kind {ref.get('kind')}")
         if ref.get("kind") == "exact" and not ref.get("accept"):
             errors.append(f"{it.get('id')}: exact인데 accept가 없음")
+        for pat in ref.get("accept_regex", []):
+            try:
+                re.compile(pat)
+            except re.error as e:
+                errors.append(f"{it.get('id')}: accept_regex {pat!r} 오류 {e}")
         if ref.get("kind") == "key_points" and not ref.get("points"):
             errors.append(f"{it.get('id')}: key_points인데 points가 없음")
         if it.get("expected_language") not in ("ko", "en"):

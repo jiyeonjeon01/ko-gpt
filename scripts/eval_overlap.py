@@ -68,12 +68,20 @@ class EvalGuard:
         for m in messages:
             if m["role"] != "user":
                 continue
-            tg, tn = grams(m["content"]), normalize(m["content"])
-            for eid, a, an in self.p:
-                j, c = scores(a, tg)
-                if an == tn or flagged(j, c, len(a), len(tg)):
-                    return eid
+            for seg in segments(m["content"]):
+                tg, tn = grams(seg), normalize(seg)
+                for eid, a, an in self.p:
+                    j, c = scores(a, tg)
+                    if an == tn or flagged(j, c, len(a), len(tg)):
+                        return eid
         return None
+
+
+def segments(text: str) -> list[str]:
+    """발화 전체와, 빈 줄로 나뉜 문단 각각. dolly처럼 '질문\n\n참고 글' 형태에서 긴 참고 글 때문에
+    길이 비율 조건을 넘어 질문 겹침을 놓치지 않게 한다"""
+    parts = [x.strip() for x in text.split("\n\n") if x.strip()]
+    return [text] + parts if len(parts) > 1 else [text]
 
 
 # ---- 비교 대상 ----

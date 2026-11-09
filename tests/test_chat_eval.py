@@ -192,3 +192,22 @@ def test_scoring_make_and_collect(tmp_path):
     assert res["ab_preference"] == {"post": 5, "같음": 1}
     with pytest.raises(FileExistsError):
         ss.make(items, runs, out)
+
+
+def test_accept_regex_word_start_and_code_forms():
+    items = {it["id"]: it for it in json.loads((Path(__file__).resolve().parents[1] / "eval/chat120/draft_v0.2.json").read_text(encoding="utf-8"))["items"]}
+    f13 = items["f13"]["reference"]["accept_regex"]
+    for t in ["물이 돼요.", "물.", "물로 변해요"]:
+        assert cm.matches_regex(t, f13), t
+    for t in ["동물이 됩니다", "물질이 돼요", "물체예요"]:
+        assert not cm.matches_regex(t, f13), t
+    k09 = items["k09"]["reference"]["accept_regex"]
+    for t in ["if key in d:\n    pass", "`key in my_dict`로 확인", "d.keys()", "d.get('a')", "in 연산자를 써요"]:
+        assert cm.matches_regex(t, k09), t
+    for t in ["print(string)", "파이썬에서는 in Python.", "It is built in python."]:
+        assert not cm.matches_regex(t, k09), t
+    m05 = items["m05"]["reference"]["accept"]
+    assert cm.contains_answer("오후 8시예요", m05) and not cm.contains_answer("오전 8시", m05)
+    assert not cm.contains_answer("8시예요", m05)
+    gen = {"completion": "동물이 돼요", "completion_ids": [5, 6], "stop_reason": "im_end"}
+    assert cm.item_metrics(items["f13"], gen)["answer_included"] is False

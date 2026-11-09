@@ -56,3 +56,18 @@ def test_user_text_joins_turns():
     it = {"messages": [{"role": "user", "content": "A"}, {"role": "assistant", "content": "B"},
                        {"role": "user", "content": "C"}]}
     assert eo.user_text(it) == "A\nC"
+
+
+def test_guard_checks_paragraphs_of_long_messages():
+    """dolly처럼 '질문\n\n긴 참고 글'이면 발화 전체로는 길이 비율에 걸려 놓치므로 문단별로도 본다"""
+    g = eo.EvalGuard([("f06", "태양계에서 가장 큰 행성은?")])
+    ctx = "목성은 태양에서 다섯 번째 행성이다. " * 20
+    assert g.hit([{"role": "user", "content": "태양계에서 가장 큰 행성은 무엇인가요?\n\n" + ctx}]) == "f06"
+    assert g.hit([{"role": "user", "content": "오늘 날씨 어때?\n\n" + ctx}]) is None
+    assert eo.segments("한 문단") == ["한 문단"]
+
+
+def test_draft_v02_valid_and_regex_compiles():
+    doc = json.loads((ROOT / "eval/chat120/draft_v0.2.json").read_text(encoding="utf-8"))
+    assert fz.validate(doc) == []
+    assert doc["status"] == "draft"

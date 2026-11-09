@@ -1,7 +1,7 @@
 """SFT 학습 (Phase 2). 사전학습 Checkpoint에서 시작해 sft_data.py가 만든 데이터로 학습한다.
 
     scripts/run_monitored.sh runs/phase2/sft42m  (TRAIN_SCRIPT=sft_train.py)  \
-        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v1 \
+        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v2 \
         --max-lr 1e-4 --epochs 1 --deterministic
 
 Loss: Step 안 모든 micro-batch의 응답 토큰(마스크 1) 전체에 대한 평균 cross-entropy.
