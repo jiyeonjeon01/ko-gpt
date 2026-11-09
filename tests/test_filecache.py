@@ -48,3 +48,21 @@ def test_refuses_venv_and_missing(proj_dir):
     if venv_file is not None:
         assert ".venv" in fc.drop_cache(venv_file)[str(venv_file)]
     assert "일반 파일" in fc.drop_cache(proj_dir / "none.bin")[str(proj_dir / "none.bin")]
+
+
+def test_hash_tree_matches_sha256sum_and_drops_cache(proj_dir):
+    import hashlib
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import hash_tree
+    f = proj_dir / "c.bin"
+    f.write_bytes(os.urandom(1 << 20))
+    fc.drop_cache(f)
+    f.read_bytes()
+    assert fc.resident_bytes(f) > 0
+    assert hash_tree.sha256_drop(f) == hashlib.sha256(f.read_bytes()).hexdigest()
+    fc.drop_cache(f)
+    hash_tree.sha256_drop(f)
+    assert fc.resident_bytes(f) == 0
+    (proj_dir / "skip").mkdir()
+    (proj_dir / "skip" / "d.bin").write_bytes(b"x")
+    assert hash_tree.files([proj_dir], [proj_dir / "skip"]) == [f]
