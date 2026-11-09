@@ -1,7 +1,7 @@
 """SFT 학습 (Phase 2). 사전학습 Checkpoint에서 시작해 sft_data.py가 만든 데이터로 학습한다.
 
     scripts/run_monitored.sh runs/phase2/sft42m  (TRAIN_SCRIPT=sft_train.py)  \
-        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v3 \
+        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v4 \
         --max-lr 1e-4 --epochs 1 --deterministic
 
 Loss: Step 안 모든 micro-batch의 응답 토큰(마스크 1) 전체에 대한 평균 cross-entropy.
@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 
 import torch
+
+from filecache import drop_cache
 import torch.nn.functional as F
 
 import train as T
@@ -33,7 +35,8 @@ from tokenizer import file_sha256
 SFT_CHECKPOINT_VERSION = 1
 # 학습에 쓰지 않는 데이터 빌드 (파일은 보존). 이름은 manifest의 config.name 또는 폴더 이름
 RETIRED_BUILDS = {
-    "phase2_a2_noS11_v1": "평가 문항 겹침 검사 누락(chat120 f06·f07이 정답과 함께 들어 있음). phase2_a2_noS11_v2를 쓴다",
+    "phase2_a2_noS11_v1": "평가 문항 겹침 검사 누락(chat120 f06·f07이 정답과 함께 들어 있음). v3 이후를 쓴다",
+    "phase2_a2_noS11_v2": "바꿔 쓴 평가 질문·긴 글 속 평가 질문 16개 대화 남음(f05·f08·g03 등). v3 이후를 쓴다",
 }
 
 
@@ -200,6 +203,7 @@ def run(argv=None) -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.resume:
         ck = torch.load(args.resume, map_location="cpu", weights_only=True)
+        drop_cache(args.resume)
         out_dir = args.out_dir or args.resume.parent
         if out_dir.resolve() != args.resume.parent.resolve():
             raise ValueError("재개는 Checkpoint가 있는 폴더에 이어 쓴다")
@@ -217,8 +221,10 @@ def run(argv=None) -> int:
     val_rows = load_split(args.data_dir / "val.jsonl")
     if file_sha256(args.data_dir / "train.jsonl") != manifest["train_sha256"]:
         raise ValueError("train.jsonl이 manifest와 다르다")
+    drop_cache(*(args.data_dir / n for n in ("train.jsonl", "val.jsonl", "manifest.json")))  # 메모리에 올렸으니 캐시는 뺀다
 
     init = torch.load(args.init, map_location="cpu", weights_only=True)
+    drop_cache(args.init)  # 시작 Checkpoint는 읽기만 한다. 캐시만 뺀다
     if args.model and init["run"].get("model") != args.model:
         raise ValueError(f"--model {args.model} ≠ Checkpoint 모델 {init['run'].get('model')}")
     model_cfg = GPTConfig(**init["model_config"])

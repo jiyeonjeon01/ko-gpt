@@ -211,3 +211,12 @@ def test_accept_regex_word_start_and_code_forms():
     assert not cm.contains_answer("8시예요", m05)
     gen = {"completion": "동물이 돼요", "completion_ids": [5, 6], "stop_reason": "im_end"}
     assert cm.item_metrics(items["f13"], gen)["answer_included"] is False
+
+
+def test_v03_code_items_accept_regex():
+    items = {it["id"]: it for it in json.loads((Path(__file__).resolve().parents[1] / "eval/chat120/draft_v0.3.json").read_text(encoding="utf-8"))["items"]}
+    k02, k04 = items["k02"]["reference"]["accept_regex"], items["k04"]["reference"]["accept_regex"]
+    assert all(cm.matches_regex(t, k02) for t in ["len(my_list)을 써요", "len 함수를 써요"])
+    assert not any(cm.matches_regex(t, k02) for t in ["리스트.length", "The length is 3"])
+    assert all(cm.matches_regex(t, k04) for t in ["sorted(lst)", "lst.sort()", "a.sort(reverse=False)"])
+    assert not cm.matches_regex("sort 함수", k04)

@@ -10,13 +10,15 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-FOCUS = ["f05", "f09", "m05", "f13", "k09"]
+FOCUS = ["f05", "f09", "m05", "f13", "k09", "k02", "k04"]
 # 판정 예 (tests/test_chat_eval.py와 같은 예, chat_metrics.py로 실제 판정해 표에 넣는다)
 EXAMPLES = {
     "f05": ["100℃에서 끓어요", "100°C", "섭씨 100도", "212°F", "90도", "기압에 따라 달라요"],
     "f09": ["한라산이에요", "백두산이에요", "남한에서는 한라산, 한반도에서는 백두산"],
     "m05": ["오후 8시예요", "저녁 8시입니다", "20:00", "8시예요", "오전 8시", "오후 18시"],
     "f13": ["물이 돼요.", "물.", "물로 변해요", "동물이 됩니다", "물질이 돼요", "물체예요"],
+    "k02": ["len(my_list)을 써요", "len 함수를 써요", "리스트.length", "The length is 3"],
+    "k04": ["sorted(lst)", "lst.sort()", "a.sort(reverse=False)", "sort 함수"],
     "k09": ["if key in d:", "`key in my_dict`로 확인", "d.keys()", "d.get('a')", "in 연산자를 써요", "print(string)", "파이썬에서는 in Python."],
 }
 
@@ -82,11 +84,11 @@ def render(doc: dict, sha: str, src: str) -> str:
            f"- 문항 {len(items)}개: " + ", ".join(f"{c} {n}" for c, n in cats.items()),
            f"- 정답 기준 종류: exact {kinds['exact']}, key_points {kinds['key_points']}, none {kinds['none']} / 다중 턴 {len(multi)}개",
            "- 표 안의 `\\|`는 Markdown 표 때문에 넣은 표시다. 정규식에서는 `|`(또는)이다.",
-           "- 채점 기준 전체는 `rubric.md`(v0.2-draft). 요약: 사람 채점 5개 축(형식, 자연스러움, 관련성, 사실 정확성, 안전성) × 0~2점.",
+           "- 채점 기준 전체는 `rubric.md`. 요약: 사람 채점 5개 축(형식, 자연스러움, 관련성, 사실 정확성, 안전성) × 0~2점.",
            "  - 사실 정확성은 exact = 허용 답과 같은 답, key_points = 핵심과 맞음, none = 틀린 사실 주장 없음으로 판단한다.",
            "  - 자동 정답 포함률은 exact 문항에만 계산하는 보조 지표다.", ""]
 
-    out += ["## 1. 집중 검토 문항: f05·f09·m05·f13·k09", "",
+    out += ["## 1. 집중 검토 문항: f05·f09·m05·f13·k09 (+ v0.3에서 고친 k02·k04)", "",
             "| id | 질문 | 허용 답 (사람 채점) | 자동 판정 | note |", "|---|---|---|---|---|"]
     by_id = {it["id"]: it for it in items}
     for i in FOCUS:

@@ -95,3 +95,13 @@ def test_guard_paraphrase_patterns():
     assert g.hit([{"role": "user", "content": "라면 끓이는 법 알려줘"}]) is None
     # 패턴은 guard에 있는 문항에만 적용
     assert eo.EvalGuard([("x", "다른 질문")]).patterns == []
+
+
+def test_freeze_records_review_note(tmp_path):
+    import shutil
+    d = tmp_path / "draft.json"
+    shutil.copy(ROOT / "eval/chat120/draft_v0.3.json", d)
+    (tmp_path / "rubric.md").write_text("r", encoding="utf-8")
+    out = fz.freeze(d, 1, tmp_path / "rubric.md", "사용자는 원문 전체를 직접 검토하지 않았다")
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["review"].startswith("사용자는") and fz.verify(out)

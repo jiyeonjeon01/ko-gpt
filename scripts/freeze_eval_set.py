@@ -66,7 +66,7 @@ def canonical(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def freeze(draft: Path, version: int, rubric: Path) -> Path:
+def freeze(draft: Path, version: int, rubric: Path, review_note: str | None = None) -> Path:
     doc = json.loads(draft.read_text(encoding="utf-8"))
     errors = validate(doc)
     if errors:
@@ -84,6 +84,8 @@ def freeze(draft: Path, version: int, rubric: Path) -> Path:
         "rule": "고정 뒤에는 items·reference·safety·rubric을 고치지 않는다. 고칠 일이 있으면 새 버전으로 고정한다.",
         "items": doc["items"],
     }
+    if review_note:
+        frozen["review"] = review_note  # 누가 무엇을 검토했는지 (해시 대상 아님)
     out.write_text(json.dumps(frozen, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
 
@@ -100,9 +102,10 @@ def main(argv=None) -> int:
     p.add_argument("draft", type=Path)
     p.add_argument("--version", type=int, default=1)
     p.add_argument("--rubric", type=Path)
+    p.add_argument("--review-note", help="검토 기록 (예: 사용자가 원문 전체를 직접 검토하지 않았음)")
     a = p.parse_args(argv)
     rubric = a.rubric or a.draft.parent / "rubric.md"
-    out = freeze(a.draft, a.version, rubric)
+    out = freeze(a.draft, a.version, rubric, a.review_note)
     print(f"고정: {out} (items_sha256 {json.loads(out.read_text(encoding='utf-8'))['items_sha256'][:16]}…)")
     return 0
 

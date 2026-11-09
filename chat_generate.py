@@ -17,6 +17,8 @@ from pathlib import Path
 
 import torch
 
+from filecache import drop_cache
+
 from config import GPTConfig
 from model import GPT
 from sft import prompt_ids
@@ -52,6 +54,7 @@ def generate(model, ids: list[int], max_new_tokens: int, temperature: float, top
 
 def load_model(path: Path, device: str):
     ck = torch.load(path, map_location="cpu", weights_only=True)
+    drop_cache(path)  # 읽은 Checkpoint를 WSL 파일 캐시에서 뺀다 (filecache.py)
     if ck.get("kind") == "sft":
         tok_path = ck["run"]["tokenizer"]
     else:

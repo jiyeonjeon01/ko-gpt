@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 import torch
+
+from filecache import drop_cache
 import torch.nn.functional as F
 
 from config import GPTConfig
@@ -265,6 +267,7 @@ def main() -> None:
         raise FileExistsError(f"{a.out}가 이미 있다. 기존 결과를 덮어쓰지 않는다")
 
     ckpt = torch.load(a.checkpoint, map_location="cpu", weights_only=True)
+    drop_cache(a.checkpoint)  # filecache.py
     data_cfg = json.loads(Path(ckpt["run"]["data"]).read_text(encoding="utf-8"))
     tok = load_tokenizer(data_cfg["tokenizer"])
     model = GPT(GPTConfig(**ckpt["model_config"]))

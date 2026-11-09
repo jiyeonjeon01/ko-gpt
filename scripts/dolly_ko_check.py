@@ -87,4 +87,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        # 읽은 원본·쓴 결과가 WSL 파일 캐시로 남아 Windows 메모리를 차지하지 않게 뺀다 (이 저장소의 data/만, filecache.py)
+        _r = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(_r))
+        from filecache import drop_cache_under
+        drop_cache_under(_r / "data" / "sample", _r / "data" / "sft")

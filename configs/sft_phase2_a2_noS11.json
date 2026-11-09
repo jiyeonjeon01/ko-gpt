@@ -1,5 +1,5 @@
 {
- "name": "phase2_a2_noS11_v3",
+ "name": "phase2_a2_noS11_v4",
  "description": "Phase 2 파이프라인 검증용. 한국어 A 그룹 전부(aya ko, oasst2 ko, dolly-ko) 1회 + 영어 oasst2 다중 턴을 한국어 응답 토큰의 0.5배까지 (A2안). S11 제외",
  "seed": 1337,
  "val_frac": 0.02,

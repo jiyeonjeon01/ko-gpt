@@ -28,6 +28,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from filecache import drop_cache
+
 from config import GPTConfig, model_config
 from model import GPT
 from optim import NonFiniteError, OptimConfig, build_optimizer, train_step, wsd_lr
@@ -283,6 +285,7 @@ def run(argv=None) -> int:
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu", weights_only=True)
+        drop_cache(args.resume)  # filecache.py
         out_dir = args.resume.parent if args.out_dir is None else args.out_dir
         if out_dir.resolve() != args.resume.parent.resolve():
             raise ValueError("재개는 Checkpoint가 있는 폴더에서만 한다 (기존 결과 보호)")

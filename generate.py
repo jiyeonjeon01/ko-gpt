@@ -16,6 +16,8 @@ from pathlib import Path
 
 import torch
 
+from filecache import drop_cache
+
 from config import GPTConfig
 from model import GPT
 from text import EOT_ID
@@ -79,6 +81,7 @@ def main() -> None:
     results = []
     for path in args.checkpoints:
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
+        drop_cache(path)  # filecache.py
         data = json.loads(Path(ckpt["run"]["data"]).read_text(encoding="utf-8"))
         tok = load_tokenizer(data["tokenizer"])
         model = GPT(GPTConfig(**ckpt["model_config"]))

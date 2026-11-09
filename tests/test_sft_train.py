@@ -202,6 +202,21 @@ def test_retired_build_is_refused(tmp_path):
     (d2 / "DO_NOT_TRAIN").write_text("이유", encoding="utf-8")
     with pytest.raises(ValueError, match="DO_NOT_TRAIN"):
         st.check_not_retired(d2, {"config": {"name": "x"}})
-    d3 = tmp_path / "phase2_a2_noS11_v2"
+    with pytest.raises(ValueError, match="학습에 쓰지 않는"):
+        st.check_not_retired(d2, {"config": {"name": "phase2_a2_noS11_v2"}})
+    d3 = tmp_path / "phase2_a2_noS11_v3"
     d3.mkdir()
-    st.check_not_retired(d3, {"config": {"name": "phase2_a2_noS11_v2"}})
+    st.check_not_retired(d3, {"config": {"name": "phase2_a2_noS11_v3"}})
+
+
+def test_run_drops_cache_of_init_data_and_saved_checkpoint(setup, monkeypatch):
+    """학습이 읽은 시작 Checkpoint·데이터와 저장한 Checkpoint의 캐시를 반환하는지 (호출 대상 확인)"""
+    tmp, init, data = setup
+    calls = []
+    monkeypatch.setattr(st, "drop_cache", lambda *p: calls.extend(str(x) for x in p) or {})
+    out = tmp / "run_cache"
+    assert st.main(argv(out, init, data, ["--model", "tiny"])) == 0
+    assert str(init) in calls
+    assert {str(data / n) for n in ("train.jsonl", "val.jsonl", "manifest.json")} <= set(calls)
+    src = open(T.__file__, encoding="utf-8").read()  # 저장은 train.save_checkpoint: fsync + DONTNEED
+    assert "POSIX_FADV_DONTNEED" in src
