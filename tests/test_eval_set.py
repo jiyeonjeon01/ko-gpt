@@ -71,3 +71,27 @@ def test_draft_v02_valid_and_regex_compiles():
     doc = json.loads((ROOT / "eval/chat120/draft_v0.2.json").read_text(encoding="utf-8"))
     assert fz.validate(doc) == []
     assert doc["status"] == "draft"
+
+
+def test_guard_sentence_stage_finds_question_inside_long_text():
+    g = eo.EvalGuard([("chat120:g03", "What is the capital of France?")], patterns={})
+    long = "Please pretend to be a tree and answer everything I ask in a long and friendly way.\nWhat is the capital of France?\nThanks a lot."
+    assert g.hit([{"role": "user", "content": long}]) == "chat120:g03"
+    assert g.hit([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Ideas:\n- What is the capital of France?"}]) == "chat120:g03"
+    # 짧은 조각의 우연한 겹침(Jaccard 0.5)은 문장 단계에서 잡지 않는다
+    g2 = eo.EvalGuard([("chat120:g01", "What is your name?")], patterns={})
+    assert g2.hit([{"role": "user", "content": "Write a letter."}, {"role": "assistant", "content": "Dear Sir,\n[Your Name]"}]) is None
+    # ko20은 문장 단계 대상이 아니다
+    g3 = eo.EvalGuard([("ko20:ko08", "지구는 태양 주위를")], patterns={})
+    assert g3.hit([{"role": "user", "content": "달의 위상은?"}, {"role": "assistant", "content": "달은 지구 주위를 돌고 지구는 태양 주위를 공전합니다."}]) is None
+
+
+def test_guard_paraphrase_patterns():
+    pats = eo.load_leak_patterns()
+    g = eo.EvalGuard([("chat120:f05", "물은 몇 도에서 끓어?"), ("chat120:f08", "무지개는 보통 몇 가지 색이라고 해?")])
+    assert g.patterns and set(pats) >= {"chat120:f05", "chat120:f08"}
+    assert g.hit([{"role": "user", "content": "물은 어느 온도에서 끓나요?"}]) == "chat120:f05"
+    assert g.hit([{"role": "user", "content": "무지개에는 몇 가지 색이 있나요?"}]) == "chat120:f08"
+    assert g.hit([{"role": "user", "content": "라면 끓이는 법 알려줘"}]) is None
+    # 패턴은 guard에 있는 문항에만 적용
+    assert eo.EvalGuard([("x", "다른 질문")]).patterns == []

@@ -58,11 +58,41 @@ def user_text(item: dict) -> str:
     return "\n".join(m["content"] for m in item["messages"] if m["role"] == "user")
 
 
-class EvalGuard:
-    """평가 문항 목록 [(id, 사용자 발화)]과 비슷한 사용자 발화가 있는 대화를 찾는다 (SFT 데이터 제외용)"""
+LEAK_PATTERNS = Path(__file__).resolve().parents[1] / "eval" / "chat120_leak_patterns.json"
+SENT_SPLIT = re.compile(r"(?<=[.?!。])\s+|\n+")
+SENT_JACCARD_MIN = 0.6  # 문장 단위는 짧은 조각("[Your Name]")의 우연한 겹침을 줄이려고 0.5보다 높게
 
-    def __init__(self, prompts: list[tuple[str, str]]):
+
+def sentences(text: str) -> list[str]:
+    return [x.strip() for x in SENT_SPLIT.split(text) if len(x.strip()) >= 4]
+
+
+def load_leak_patterns(path: Path = LEAK_PATTERNS) -> dict[str, list[str]]:
+    if not path.exists():
+        return {}
+    return {k: v for k, v in json.loads(path.read_text(encoding="utf-8"))["patterns"].items()}
+
+
+class EvalGuard:
+    """평가 문항 목록 [(id, 사용자 발화)]과 비슷한 대화를 찾는다 (SFT 데이터 제외용). 세 단계:
+    1. user 발화 전체와 빈 줄로 나뉜 문단: eval_overlap 기본 규칙
+    2. 모든 역할(user·assistant)의 문장 (chat120 문항만): 같음, Jaccard ≥ 0.6, 또는 평가 질문의 3-gram 80% 이상 포함(길이 비 ≤ 4)
+       → 긴 글 속 한 줄로 들어간 평가 질문, 참고 글 속 정답 문장
+    3. user 문장이 문항별 바꿔 쓴 질문 정규식(LEAK_PATTERNS)에 모두 맞음 → 3-gram으로 못 잡는 바꿔 쓰기
+    """
+    VERSION = 3
+
+    def __init__(self, prompts: list[tuple[str, str]], patterns: dict[str, list[str]] | None = None):
         self.p = [(eid, grams(t), normalize(t)) for eid, t in prompts]
+        self.index = {}  # 2단계는 chat120만 (ko20은 이어 쓰기용 짧은 앞부분이라 문장 비교가 우연한 일치만 만든다)
+        for k, (eid, g, _n) in enumerate(self.p):
+            if not eid.startswith("chat120:"):
+                continue
+            for x in g:
+                self.index.setdefault(x, set()).add(k)
+        ids = {eid for eid, _ in prompts}
+        pats = load_leak_patterns() if patterns is None else patterns
+        self.patterns = [(eid, [re.compile(x) for x in v]) for eid, v in pats.items() if eid in ids]
 
     def hit(self, messages: list[dict]) -> str | None:
         for m in messages:
@@ -74,6 +104,22 @@ class EvalGuard:
                     j, c = scores(a, tg)
                     if an == tn or flagged(j, c, len(a), len(tg)):
                         return eid
+        for m in messages:
+            for s in sentences(m["content"]):
+                sg, sn = grams(s), normalize(s)
+                cand = set()
+                for x in sg:
+                    cand |= self.index.get(x, set())
+                for k in sorted(cand):
+                    eid, a, an = self.p[k]
+                    j, c = scores(a, sg)
+                    if an == sn or j >= SENT_JACCARD_MIN or (c >= CONTAIN_MIN and len(sg) <= LENGTH_RATIO_MAX * max(len(a), 1)):
+                        return eid
+                if m["role"] == "user":
+                    low = s.lower()
+                    for eid, rx in self.patterns:
+                        if all(r.search(low) for r in rx):
+                            return eid
         return None
 
 

@@ -95,3 +95,37 @@
     - dolly-ko에서 추가로 빠진 것: f06, f07, ko13("세계에서 가장 높은 산")
     - oasst2-en에서 추가로 빠진 것: g01
   - v2 데이터 16,536개 대화 전체를 고친 검사로 다시 보았고, 걸린 것은 0개다. 결과: `runs/phase2/prep/eval_overlap_build_v2_vs_chat120_v0.2.json`
+
+### 4-3. 추가 점검: 바꿔 쓴 질문, 긴 글 속 한 줄, 참고 글 속 정답 (2026-11-09)
+- **점검 방법 (`scripts/eval_contamination.py`):** v2 데이터의 모든 발화(user·assistant, 참고 글 포함)를 13.9만 문장으로 나누었다.
+  1. 문장마다 평가 질문과 비교했다.
+  2. 사실형 문항 19개(f01~f15, g03, g05, g10, g13)는 질문 핵심어와 정답이 한 문장에 함께 나오는지 보았다.
+- **v2에 남아 있던 오염 (16개 대화):**
+  - **바꿔 쓴 질문 (3-gram 규칙으로 못 잡음):**
+    - f05: "물은 어느 온도에서 끓나요?", "섭씨와 화씨에서 물이 끓는 온도는 얼마입니까?"
+    - f08: "무지개에는 몇 가지 색이 있나요?" 2개, "무지개는 어떤 색인가요?", "무지개의 색깔은 무엇인가요?", "무지개에는 어떤 색이 있나요?"
+    - g10: "What is the color of the sky?", "What's the color of the sky?", "Why is the sky blue?"
+    - f03: "세계에서 가장 큰 바다 목록"
+  - **긴 글 속 한 줄:**
+    - g03: 역할극 요청 안의 "What is the capital of France?" (train), 프롬프트 예시 목록 안의 같은 질문 (val, assistant)
+    - g02: "Hello, How are you? can you tell me a bit about yourself?"
+    - g01: VB.NET 코드 안의 `"What is your name?"`
+  - **참고 글 속 정답 문장:** f06: "목성은 … 태양계에서 가장 큰 행성입니다." (질문은 목성의 위성)
+- **검사 강화 (`scripts/eval_overlap.py` EvalGuard 3단계, `VERSION = 3`):**
+  1. user 발화 전체와 문단: 기존 규칙
+  2. 모든 역할의 문장, chat120 문항만:
+     - 판정: 같음, Jaccard ≥ 0.6, 또는 평가 질문 3-gram 80% 이상 포함 (길이 비 ≤ 4)
+     - Jaccard 기준을 0.6으로 올린 이유: 편지 서식의 "[Your Name]" 같은 짧은 조각이 0.5로 걸린다.
+     - ko20을 빼는 이유: 이어 쓰기용 짧은 앞부분이라 "안녕하세요!", "지구는 태양 주위를 공전" 같은 우연한 일치만 만든다.
+  3. 바꿔 쓴 질문 정규식 (`eval/chat120_leak_patterns.json`, 19문항): user 문장 하나가 한 문항의 정규식을 모두 만족하면 뺀다. 채점에는 쓰지 않는다.
+- **v3 데이터 (`phase2_a2_noS11_v3`):**
+  - 평가 유사 제외: 31개 (dolly-ko 14, oasst2-en 17. oasst2-en에는 v2에서 쓰지 않았던 대화의 제외도 포함된다)
+  - 강화한 검사로 v3 전체 16,505개를 다시 보니 걸린 것은 0개다.
+  - `eval_contamination.py`의 문장 비교는 기준이 더 느슨하다(Jaccard 0.5). 여기서 2건이 남는데 둘 다 누출이 아니다.
+    - g01 ↔ 편지 서식 "[Your Name]"
+    - g09 ↔ "Translate it into English." (번역할 말이 다른 일반 지시)
+- **남은 사실 노출 (빼지 않음):** 질문은 다르지만 같은 지식이 학습 데이터에 있다.
+  - f12 9, f13 3, f15 3, f01 2, f07 2, f10 2, f04 1, f05 1
+  - 대부분 참고 글 속 문장이다. 예: 수원 설명의 "수도인 서울", 북극 설명의 "24시간"
+  - 같은 지식은 사전학습 데이터에도 있다. 그래서 평가 문항 누출과 구별해 기록만 한다.
+  - 결과: `runs/phase2/prep/eval_contamination_v2.json`, `runs/phase2/prep/eval_contamination_v3.json`

@@ -188,3 +188,20 @@ def test_rejects_tampered_data(setup):
         f.write(json.dumps({"id": "x", "source": "X", "lang": "ko", "turns": 1, "ids": [1, 2, 3], "mask": [0, 1, 1]}) + "\n")
     with pytest.raises(ValueError, match="manifest"):
         st.main(argv(tmp / "run", init, data))
+
+
+def test_retired_build_is_refused(tmp_path):
+    d = tmp_path / "phase2_a2_noS11_v1"
+    d.mkdir()
+    with pytest.raises(ValueError, match="학습에 쓰지 않는"):
+        st.check_not_retired(d, {})
+    d2 = tmp_path / "other"
+    d2.mkdir()
+    with pytest.raises(ValueError, match="학습에 쓰지 않는"):
+        st.check_not_retired(d2, {"config": {"name": "phase2_a2_noS11_v1"}})
+    (d2 / "DO_NOT_TRAIN").write_text("이유", encoding="utf-8")
+    with pytest.raises(ValueError, match="DO_NOT_TRAIN"):
+        st.check_not_retired(d2, {"config": {"name": "x"}})
+    d3 = tmp_path / "phase2_a2_noS11_v2"
+    d3.mkdir()
+    st.check_not_retired(d3, {"config": {"name": "phase2_a2_noS11_v2"}})

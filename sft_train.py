@@ -1,7 +1,7 @@
 """SFT 학습 (Phase 2). 사전학습 Checkpoint에서 시작해 sft_data.py가 만든 데이터로 학습한다.
 
     scripts/run_monitored.sh runs/phase2/sft42m  (TRAIN_SCRIPT=sft_train.py)  \
-        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v2 \
+        --model pilot-42m --init runs/phase1/pilot42m/last.pt --data-dir data/sft/builds/phase2_a2_noS11_v3 \
         --max-lr 1e-4 --epochs 1 --deterministic
 
 Loss: Step 안 모든 micro-batch의 응답 토큰(마스크 1) 전체에 대한 평균 cross-entropy.
@@ -31,6 +31,21 @@ from text import PAD_ID
 from tokenizer import file_sha256
 
 SFT_CHECKPOINT_VERSION = 1
+# 학습에 쓰지 않는 데이터 빌드 (파일은 보존). 이름은 manifest의 config.name 또는 폴더 이름
+RETIRED_BUILDS = {
+    "phase2_a2_noS11_v1": "평가 문항 겹침 검사 누락(chat120 f06·f07이 정답과 함께 들어 있음). phase2_a2_noS11_v2를 쓴다",
+}
+
+
+def check_not_retired(data_dir: Path, manifest: dict) -> None:
+    names = {data_dir.name, manifest.get("config", {}).get("name")}
+    for n in names:
+        if n in RETIRED_BUILDS:
+            raise ValueError(f"{n}은 학습에 쓰지 않는 빌드다: {RETIRED_BUILDS[n]}")
+    if (data_dir / "DO_NOT_TRAIN").exists():
+        raise ValueError(f"{data_dir}에 DO_NOT_TRAIN 표시가 있다: {(data_dir / 'DO_NOT_TRAIN').read_text(encoding='utf-8').strip()}")
+
+
 RESUME_KEYS = ("data_dir", "data_train_sha256", "init_sha256", "conv_per_step", "micro_tokens", "epochs", "max_lr",
                "warmup_frac", "min_lr_ratio", "weight_decay", "grad_clip", "seed", "deterministic")
 
@@ -197,6 +212,7 @@ def run(argv=None) -> int:
         if (out_dir / "last.pt").exists() or (out_dir / "steps.csv").exists() or (out_dir / "STOP").exists():
             raise FileExistsError(f"{out_dir}에 이전 결과가 있다. 다른 --out-dir을 쓰거나 --resume")
     manifest = json.loads((args.data_dir / "manifest.json").read_text(encoding="utf-8"))
+    check_not_retired(args.data_dir, manifest)
     train_rows = load_split(args.data_dir / "train.jsonl")
     val_rows = load_split(args.data_dir / "val.jsonl")
     if file_sha256(args.data_dir / "train.jsonl") != manifest["train_sha256"]:

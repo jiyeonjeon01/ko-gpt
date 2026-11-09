@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from eval_overlap import EvalGuard, user_text  # noqa: E402
+from eval_overlap import LEAK_PATTERNS, EvalGuard, user_text  # noqa: E402
 from sft import render_conversation  # noqa: E402
 from tokenizer import encode, file_sha256, load_tokenizer  # noqa: E402
 
@@ -239,6 +239,8 @@ def load_eval_prompts() -> tuple[list[tuple[str, str]], dict]:
         prompts += [(f"chat120:{it['id']}", user_text(it)) for it in json.loads(f.read_text(encoding="utf-8"))["items"]]
     ko20 = ROOT / "eval/prompts_ko20.json"
     files[str(ko20.relative_to(ROOT))] = file_sha256(ko20)
+    if LEAK_PATTERNS.exists():  # EvalGuard 3단계가 쓰는 바꿔 쓴 질문 정규식
+        files[str(LEAK_PATTERNS.relative_to(ROOT))] = file_sha256(LEAK_PATTERNS)
     prompts += [(f"ko20:{p['id']}", p["text"]) for p in json.loads(ko20.read_text(encoding="utf-8"))["prompts"]]
     return list(dict.fromkeys(prompts)), files
 
@@ -265,6 +267,7 @@ def main(argv=None) -> int:
         "source_files": {s: [{"path": str(f.relative_to(ROOT)), "sha256": file_sha256(f)} for f in fs if f.exists()]
                          for s, fs in SOURCE_FILES.items()},
         "eval_files_excluded_against": eval_files,
+        "eval_guard_version": EvalGuard.VERSION,
         "train_sha256": write_jsonl(out / "train.jsonl", res["train"]),
         "val_sha256": write_jsonl(out / "val.jsonl", res["val"]),
         "summary": res["summary"], "composition": res["composition"], "source_stats": res["source_stats"],
