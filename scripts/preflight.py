@@ -1,9 +1,17 @@
-"""학습 시작 전 자동 점검: Windows RAM, WSL 메모리, 다른 WSL 배포판, GPU VRAM, 디스크, 다른 학습 프로세스
+"""학습 시작 전 자동 점검: Windows RAM, WSL 메모리, GPU VRAM, 디스크, 이 프로젝트의 다른 학습 프로세스
 
     python3 scripts/preflight.py --out-dir runs/x -- --model main-110m --max-steps 11600 ...
 
 통과하면 종료 코드 0, 하나라도 실패하면 8. 결과는 <out-dir>/preflight.jsonl에 덧붙인다.
-실패해도 프로그램을 닫거나 설정을 바꾸지 않는다 (사람이 처리한다). 학습 중 안전 정지 기준(monitor.py)과는 별개다.
+실패해도 프로그램을 닫거나 설정을 바꾸지 않는다. GPT 학습만 시작하지 않고 이유를 남긴다.
+학습 중 안전 정지 기준(monitor.py)과는 별개다.
+
+다른 프로젝트와 함께 쓰는 원칙 (2026-11-09):
+- Docker Desktop(docker-desktop 배포판)과 다른 프로젝트의 프로세스는 그대로 둔다. 종료·중단하지 않고 `wsl --shutdown`도 하지 않는다.
+- 다른 WSL 배포판이 실행 중이라는 사실만으로는 차단하지 않는다 (기록만 한다).
+  - WSL2 배포판들은 하나의 VM을 같이 쓴다. Docker가 쓰는 메모리는 이미 WSL MemAvailable과 Windows 사용 가능 RAM에 반영되어 있다.
+  - GPU를 쓰는 다른 프로그램의 몫은 nvidia-smi 사용량에 반영되어 있다.
+- 그래서 지금 실행 중인 다른 프로젝트의 자원 사용을 그대로 둔 상태에서 실제 여유(RAM, WSL 메모리, VRAM, 디스크)로 판단한다.
 """
 
 import argparse
@@ -74,8 +82,24 @@ def running_wsl_distros() -> list[str] | None:
     return [line.strip() for line in text.replace("\r", "").splitlines() if line.strip()]
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _in_project(proc: Path, argv: list[bytes]) -> bool:
+    """이 저장소의 프로세스인가 (작업 폴더 또는 스크립트 경로가 저장소 안). 다른 프로젝트의 train.py는 세지 않는다"""
+    try:
+        cwd = Path(os.readlink(proc / "cwd"))
+    except OSError:
+        cwd = None
+    if cwd is not None and (cwd == ROOT or ROOT in cwd.parents):
+        return True
+    return any(a.endswith(b"train.py") and (Path(a.decode(errors="ignore")).is_absolute()
+                                             and ROOT in Path(a.decode(errors="ignore")).parents) for a in argv)
+
+
 def other_training_pids() -> list[int]:
-    """실행 중인 train.py (python 프로세스만. 명령줄에 문자열만 들어간 셸은 제외)"""
+    """이 저장소에서 실행 중인 train.py·sft_train.py (python 프로세스만. 명령줄에 문자열만 들어간 셸은 제외).
+    다른 프로젝트의 학습은 막지 않는다. 그 GPU·RAM 사용량은 VRAM·RAM 점검에 반영된다"""
     pids = []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit() or int(proc.name) == os.getpid():
@@ -85,7 +109,7 @@ def other_training_pids() -> list[int]:
             argv = (proc / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
-        if comm.startswith("python") and any(a.endswith(b"train.py") for a in argv):
+        if comm.startswith("python") and any(a.endswith(b"train.py") for a in argv) and _in_project(proc, argv):
             pids.append(int(proc.name))
     return pids
 
@@ -106,8 +130,8 @@ def evaluate(m: dict, info: dict, limits: dict) -> list[dict]:
     distros = m.get("wsl_distros")
     own = m.get("own_distro")
     others = None if distros is None else [d for d in distros if d != own]
-    add("다른 WSL 배포판 실행 중", others == [], others, "없음",
-        "Docker Desktop 등은 같은 WSL VM 메모리를 쓴다" if others else ("" if others is not None else "측정 실패"))
+    add("다른 WSL 배포판 (기록만, 차단 안 함)", True, others, "제한 없음",
+        "그대로 둔다. 쓰는 메모리는 위 RAM·WSL 점검에 이미 반영됨" if others else ("" if others is not None else "측정 실패 (기록용)"))
     used, total = m.get("gpu_used_mb"), m.get("gpu_total_mb")
     need_vram = PRESET_RESERVED_MIB[info["model"]] + CUDA_CONTEXT_MIB + GPU_MARGIN_MB
     free_vram = None if used is None or total is None else total - used
@@ -121,7 +145,7 @@ def evaluate(m: dict, info: dict, limits: dict) -> list[dict]:
     add("디스크 여유 (GB)", disk is not None and disk >= need_disk, None if disk is None else round(disk, 1),
         f">= {need_disk:.1f}", f"Checkpoint {ck / 1e9:.2f}GB × {n_files}개 + 여유 {limits['disk_margin_gb']}GB")
     pids = m.get("training_pids", [])
-    add("다른 학습 프로세스", not pids, pids, "없음")
+    add("이 프로젝트의 다른 학습 프로세스", not pids, pids, "없음")
     return checks
 
 
@@ -155,13 +179,16 @@ def main(argv=None) -> int:
         print(f"  {'통과' if c['ok'] else '실패'}  {c['check']}: {c['value']} (기준 {c['need']}) {c['note']}".rstrip())
     record = {"time": time.strftime("%F %T"), "ok": ok, "info": info, "limits": limits, "checks": checks,
               "swap_used_mb": m.get("swap_used_mb")}
+    top = windows_top_processes()  # 읽기만 한다 (통과해도 기록: 다른 프로젝트가 쓰던 자원을 남긴다)
+    record["windows_top_processes"] = top
+    record["wsl_distros"] = m.get("wsl_distros")
     if not ok:
-        top = windows_top_processes()
-        record["windows_top_processes"] = top
-        print("  Windows 상위 프로세스 (MB):")
+        record["refused"] = [c["check"] for c in checks if not c["ok"]]
+        print("  Windows 상위 프로세스 (MB, 기록용):")
         for r in top or []:
             print(f"    {r['mb']:>7,}  {r['name']} ×{r['count']}")
-        print("시작하지 않는다. 위 항목을 사람이 정리한 뒤 다시 실행한다.")
+        print("GPT 학습을 시작하지 않는다. 이유: " + ", ".join(record["refused"]))
+        print("다른 프로그램(Docker Desktop, 다른 프로젝트, 다른 WSL 배포판)은 종료하거나 바꾸지 않는다.")
     a.out_dir.mkdir(parents=True, exist_ok=True)
     with open(a.out_dir / "preflight.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
