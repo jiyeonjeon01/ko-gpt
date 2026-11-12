@@ -214,6 +214,8 @@ def test_run_drops_cache_of_init_data_and_saved_checkpoint(setup, monkeypatch):
     tmp, init, data = setup
     calls = []
     monkeypatch.setattr(st, "drop_cache", lambda *p: calls.extend(str(x) for x in p) or {})
+    import checkpoint_io  # 시작 Checkpoint는 checkpoint_io.release·checkpoint_sha256이 반환한다
+    monkeypatch.setattr(checkpoint_io, "drop_cache", lambda *p: calls.extend(str(x) for x in p) or {})
     out = tmp / "run_cache"
     assert st.main(argv(out, init, data, ["--model", "tiny"])) == 0
     assert str(init) in calls

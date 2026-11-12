@@ -32,10 +32,9 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 import torch
-
-from filecache import drop_cache
 import torch.nn.functional as F
 
+from checkpoint_io import checkpoint_sha256, load_weights, meta_of, release
 from config import GPTConfig
 from model import GPT
 from text import EOT_ID
@@ -266,17 +265,19 @@ def main() -> None:
     if a.out.exists():
         raise FileExistsError(f"{a.out}가 이미 있다. 기존 결과를 덮어쓰지 않는다")
 
-    ckpt = torch.load(a.checkpoint, map_location="cpu", weights_only=True)
-    drop_cache(a.checkpoint)  # filecache.py
-    data_cfg = json.loads(Path(ckpt["run"]["data"]).read_text(encoding="utf-8"))
+    w = load_weights(a.checkpoint)  # 모델 가중치만 mmap으로 (checkpoint_io.py)
+    data_cfg = json.loads(Path(w["run"]["data"]).read_text(encoding="utf-8"))
     tok = load_tokenizer(data_cfg["tokenizer"])
-    model = GPT(GPTConfig(**ckpt["model_config"]))
-    model.load_state_dict(ckpt["model"])
+    model = GPT(GPTConfig(**w["model_config"]))
+    model.load_state_dict(w["model"])
+    ckpt = meta_of(w)
+    del w
+    release(a.checkpoint)  # filecache.py
     model.to(a.device).eval()  # fp32 그대로 (lm-eval dtype="auto"는 체크포인트 dtype)
     max_len = model.config.block_size
 
     a.out.mkdir(parents=True)
-    meta = {"checkpoint": str(a.checkpoint), "checkpoint_sha256": file_sha256(a.checkpoint), "step": ckpt["step"],
+    meta = {"checkpoint": str(a.checkpoint), "checkpoint_sha256": checkpoint_sha256(a.checkpoint), "step": ckpt["step"],
             "tokens_seen": ckpt["tokens_seen"], "code_commit": git_commit(), "reference": LM_EVAL_REF,
             "target_delimiter": TARGET_DELIMITER, "prefix_eot": a.prefix_eot, "dtype": "float32",
             "device": a.device, "limit": a.limit,

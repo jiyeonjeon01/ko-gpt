@@ -31,6 +31,7 @@ from model import GPT, IGNORE_INDEX
 from optim import NonFiniteError, OptimConfig, build_optimizer, wsd_lr
 from text import PAD_ID
 from tokenizer import file_sha256
+from checkpoint_io import checkpoint_sha256, load_weights, meta_of, release
 
 SFT_CHECKPOINT_VERSION = 1
 # 학습에 쓰지 않는 데이터 빌드 (파일은 보존). 이름은 manifest의 config.name 또는 폴더 이름
@@ -223,8 +224,8 @@ def run(argv=None) -> int:
         raise ValueError("train.jsonl이 manifest와 다르다")
     drop_cache(*(args.data_dir / n for n in ("train.jsonl", "val.jsonl", "manifest.json")))  # 메모리에 올렸으니 캐시는 뺀다
 
-    init = torch.load(args.init, map_location="cpu", weights_only=True)
-    drop_cache(args.init)  # 시작 Checkpoint는 읽기만 한다. 캐시만 뺀다
+    # 시작 Checkpoint는 읽기만 한다. 모델 가중치만 mmap으로 읽는다 (사전학습 Optimizer·Sampler·RNG는 쓰지 않음, checkpoint_io.py)
+    init = load_weights(args.init)
     if args.model and init["run"].get("model") != args.model:
         raise ValueError(f"--model {args.model} ≠ Checkpoint 모델 {init['run'].get('model')}")
     model_cfg = GPTConfig(**init["model_config"])
@@ -237,10 +238,12 @@ def run(argv=None) -> int:
     torch.manual_seed(args.seed)
     model = GPT(model_cfg)
     model.load_state_dict(init["model"])
+    init = meta_of(init)  # 가중치(파일 대응 텐서) 참조를 끊고 작은 정보만 남긴다
+    release(args.init)
     model.to(device)
-    optimizer = build_optimizer(model, optim_cfg)
+    optimizer = build_optimizer(model, optim_cfg)  # SFT Optimizer는 새로 만든다
     run_info = {"data_dir": str(args.data_dir), "data_train_sha256": manifest["train_sha256"], "init": str(args.init),
-                "init_sha256": file_sha256(args.init), "init_step": init["step"], "model": init["run"].get("model"),
+                "init_sha256": checkpoint_sha256(args.init), "init_step": init["step"], "model": init["run"].get("model"),
                 **{k: getattr(args, k) for k in RESUME_KEYS if hasattr(args, k) and k != "data_dir"}}
     step = 0
     if args.resume:

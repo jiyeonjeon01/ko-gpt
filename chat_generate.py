@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch
 
-from filecache import drop_cache
+from checkpoint_io import checkpoint_sha256, load_weights, meta_of, release
 
 from config import GPTConfig
 from model import GPT
@@ -53,14 +53,17 @@ def generate(model, ids: list[int], max_new_tokens: int, temperature: float, top
 
 
 def load_model(path: Path, device: str):
-    ck = torch.load(path, map_location="cpu", weights_only=True)
-    drop_cache(path)  # 읽은 Checkpoint를 WSL 파일 캐시에서 뺀다 (filecache.py)
-    if ck.get("kind") == "sft":
-        tok_path = ck["run"]["tokenizer"]
+    """모델 가중치만 읽어 device에 올린다 (checkpoint_io.py). 반환 ck에는 가중치·Optimizer가 없다"""
+    w = load_weights(path)
+    if w.get("kind") == "sft":
+        tok_path = w["run"]["tokenizer"]
     else:
-        tok_path = json.loads(Path(ck["run"]["data"]).read_text(encoding="utf-8"))["tokenizer"]
-    model = GPT(GPTConfig(**ck["model_config"]))
-    model.load_state_dict(ck["model"])
+        tok_path = json.loads(Path(w["run"]["data"]).read_text(encoding="utf-8"))["tokenizer"]
+    model = GPT(GPTConfig(**w["model_config"]))
+    model.load_state_dict(w["model"])
+    ck = meta_of(w)
+    del w
+    release(path)  # 읽은 Checkpoint를 WSL 파일 캐시에서 뺀다 (filecache.py)
     model.to(device).eval()
     return model, load_tokenizer(tok_path), ck
 
@@ -101,7 +104,7 @@ def main(argv=None) -> int:
             f.write(json.dumps({"id": it["id"], "category": it.get("category"), "stop_reason": why,
                                 "n_tokens": len(out), "completion": decode(tok, out), "completion_ids": out},
                                ensure_ascii=False) + "\n")
-    meta = {"checkpoint": str(a.checkpoint), "checkpoint_sha256": file_sha256(a.checkpoint),
+    meta = {"checkpoint": str(a.checkpoint), "checkpoint_sha256": checkpoint_sha256(a.checkpoint),
             "checkpoint_kind": ck.get("kind", "pretrain"), "step": ck["step"], "eval_set": str(a.eval_set),
             "eval_set_sha256": file_sha256(a.eval_set), "eval_status": doc.get("status"),
             "items_sha256": doc.get("items_sha256"), "settings": SETTINGS, "device": a.device,
