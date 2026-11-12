@@ -5,14 +5,19 @@
 # 첫 인자는 출력 폴더(감시 로그 위치), 나머지는 train.py 인자 그대로
 # SFT는 TRAIN_SCRIPT=sft_train.py (기본 train.py). 둘 외에는 거부한다
 # 시작 전에 scripts/preflight.py로 Windows RAM·WSL·GPU·디스크를 확인하고, 실패하면 시작하지 않는다 (종료 코드 8)
+# PREFLIGHT_ARGS: 사용자가 명시적으로 승인한 경우에만 점검 기준을 바꾼다. 기본은 비어 있음 (기준 그대로, Windows RAM 6,144MB)
+#   기준을 바꾸면 PREFLIGHT_APPROVAL(승인 내용)이 꼭 있어야 한다. 없으면 preflight.py가 거부한다 (종료 코드 2)
+#   예: PREFLIGHT_ARGS="--min-win-avail-mb 4608" PREFLIGHT_APPROVAL="2026-11-11 사용자 승인: Phase 3 재개 한정" scripts/run_monitored.sh ...
 set -uo pipefail
 cd "$(dirname "$0")/.."
 OUT=$1; shift
 SCRIPT=${TRAIN_SCRIPT:-train.py}
+PREFLIGHT_ARGS=${PREFLIGHT_ARGS:-}
+PREFLIGHT_APPROVAL=${PREFLIGHT_APPROVAL:-}
 case "$SCRIPT" in train.py|sft_train.py) ;; *) echo "TRAIN_SCRIPT는 train.py 또는 sft_train.py: $SCRIPT"; exit 2 ;; esac
 mkdir -p "$OUT"
-echo "[$(date '+%F %T')] 명령: TRAIN_SCRIPT=$SCRIPT scripts/run_monitored.sh $OUT $*" >> "$OUT/command.txt"
-python3 scripts/preflight.py --out-dir "$OUT" -- "$@" 2>&1 | tee -a "$OUT/run.log"
+echo "[$(date '+%F %T')] 명령: TRAIN_SCRIPT=$SCRIPT PREFLIGHT_ARGS=\"$PREFLIGHT_ARGS\" PREFLIGHT_APPROVAL=\"$PREFLIGHT_APPROVAL\" scripts/run_monitored.sh $OUT $*" >> "$OUT/command.txt"
+python3 scripts/preflight.py --out-dir "$OUT" $PREFLIGHT_ARGS --approval "$PREFLIGHT_APPROVAL" -- "$@" 2>&1 | tee -a "$OUT/run.log"
 PRE=${PIPESTATUS[0]}
 if [ "$PRE" -ne 0 ]; then
   echo "[$(date '+%F %T')] 시작 전 점검 실패 (종료 코드 $PRE). 학습을 시작하지 않음" | tee -a "$OUT/run.log"

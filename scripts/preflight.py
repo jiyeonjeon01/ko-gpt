@@ -158,14 +158,29 @@ def measure(out_dir: Path) -> dict:
     return m
 
 
+EXIT_USAGE = 2
+DEFAULT_LIMITS = {"min_win_avail_mb": MIN_WIN_AVAIL_MB, "min_wsl_avail_mb": MIN_WSL_AVAIL_MB, "disk_margin_gb": DISK_MARGIN_GB}
+
+
+def changed_limits(a) -> dict:
+    """기본값과 다른 기준만 {이름: [기본, 지금]}"""
+    return {k: [d, getattr(a, k)] for k, d in DEFAULT_LIMITS.items() if getattr(a, k) != d}
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--min-win-avail-mb", type=int, default=MIN_WIN_AVAIL_MB)
     p.add_argument("--min-wsl-avail-mb", type=int, default=MIN_WSL_AVAIL_MB)
     p.add_argument("--disk-margin-gb", type=float, default=DISK_MARGIN_GB)
+    p.add_argument("--approval", default="", help="기준을 기본값과 다르게 쓸 때 필수: 사용자 승인 내용 (기록용)")
     p.add_argument("train_args", nargs=argparse.REMAINDER)
     a = p.parse_args(argv)
+    # 기준 변경은 사용자가 명시적으로 승인한 경우에만 쓴다. 승인 기록이 없으면 측정도 하지 않고 거부한다
+    changed = changed_limits(a)
+    if changed and not a.approval.strip():
+        print(f"시작 전 점검 기준을 기본값과 다르게 주었지만 승인 기록(--approval)이 없다: {changed}. 학습을 시작하지 않는다")
+        return EXIT_USAGE
     train_args = a.train_args[1:] if a.train_args[:1] == ["--"] else a.train_args
     info = parse_train_args(train_args, a.out_dir)
     m = measure(a.out_dir)
@@ -173,12 +188,17 @@ def main(argv=None) -> int:
               "disk_margin_gb": a.disk_margin_gb}
     checks = evaluate(m, info, limits)
     ok = all(c["ok"] for c in checks)
+    if changed:
+        print(f"  기준 변경 (사용자 승인): {changed} / 승인: {a.approval.strip()}")
     print(f"[{time.strftime('%F %T')}] 시작 전 점검 ({info['model']}, 모델 판단: {info['model_source']}, "
           f"마일스톤 {info['milestones']}개)")
     for c in checks:
         print(f"  {'통과' if c['ok'] else '실패'}  {c['check']}: {c['value']} (기준 {c['need']}) {c['note']}".rstrip())
     record = {"time": time.strftime("%F %T"), "ok": ok, "info": info, "limits": limits, "checks": checks,
               "swap_used_mb": m.get("swap_used_mb")}
+    if changed:
+        record["limits_changed"] = changed
+        record["approval"] = a.approval.strip()
     top = windows_top_processes()  # 읽기만 한다 (통과해도 기록: 다른 프로젝트가 쓰던 자원을 남긴다)
     record["windows_top_processes"] = top
     record["wsl_distros"] = m.get("wsl_distros")

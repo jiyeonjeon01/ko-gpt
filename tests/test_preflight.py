@@ -112,3 +112,41 @@ def test_refusal_never_kills_or_changes_other_programs(tmp_path, monkeypatch):
 def test_other_project_train_py_is_not_counted(tmp_path):
     assert not pf._in_project(tmp_path, [b"python", b"/home/x/other-project/train.py"])
     assert pf._in_project(tmp_path, [b"python", str(pf.ROOT / "sft_train.py").encode()])
+
+
+def test_default_win_ram_limit_stays_6144():
+    # 기본 기준은 낮아지지 않는다 (2026-11-12 사용자 지시)
+    assert pf.MIN_WIN_AVAIL_MB == 6144 and pf.DEFAULT_LIMITS["min_win_avail_mb"] == 6144
+
+
+def test_changed_limit_without_approval_is_refused(tmp_path, monkeypatch):
+    def no_measure(out):
+        raise AssertionError("승인 없는 기준 변경은 측정 전에 거부해야 한다")
+    monkeypatch.setattr(pf, "measure", no_measure)
+    assert pf.main(["--out-dir", str(tmp_path), "--min-win-avail-mb", "4608", "--", "--model", "pilot-42m"]) == pf.EXIT_USAGE
+    assert pf.main(["--out-dir", str(tmp_path), "--min-win-avail-mb", "4608", "--approval", "  ",
+                    "--", "--model", "pilot-42m"]) == pf.EXIT_USAGE
+    assert not (tmp_path / "preflight.jsonl").exists()
+
+
+def test_changed_limit_with_approval_is_recorded(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(pf, "measure", lambda out: {**GOOD, "win_avail_mb": 5000})
+    monkeypatch.setattr(pf, "windows_top_processes", lambda n=15: [])
+    assert pf.main(["--out-dir", str(tmp_path), "--min-win-avail-mb", "4608", "--approval", "사용자 승인 (시험)",
+                    "--", "--model", "pilot-42m"]) == 0
+    rec = json.loads((tmp_path / "preflight.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["limits_changed"] == {"min_win_avail_mb": [6144, 4608]} and rec["approval"] == "사용자 승인 (시험)"
+    # 기본 기준이면 승인 없이도 되고 limits_changed가 없다
+    assert pf.main(["--out-dir", str(tmp_path), "--", "--model", "pilot-42m"]) == pf.EXIT_PREFLIGHT
+    rec = json.loads((tmp_path / "preflight.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert "limits_changed" not in rec and rec["limits"]["min_win_avail_mb"] == 6144
+
+
+def test_run_monitored_refuses_changed_limit_without_approval(tmp_path):
+    root = Path(__file__).resolve().parent.parent
+    env = {"PATH": "/usr/bin:/bin", "PREFLIGHT_ARGS": "--min-win-avail-mb 4608"}
+    r = subprocess.run(["bash", str(root / "scripts/run_monitored.sh"), str(tmp_path / "out"), "--model", "pilot-42m"],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "승인 기록" in r.stdout
+    assert "PREFLIGHT_APPROVAL" in (tmp_path / "out" / "command.txt").read_text(encoding="utf-8")
